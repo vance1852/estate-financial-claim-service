@@ -1,0 +1,9 @@
+.git
+.gitignore
+.env
+data
+*.db
+*.db-shm
+*.db-wal
+coverage.out
+estate-financial-claim-service
