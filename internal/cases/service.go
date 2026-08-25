@@ -71,7 +71,7 @@ func (s *Service) Submit(ctx context.Context, principal domain.Principal, input 
 		if replayErr == nil {
 			if err := store.ValidateReplay(record, principal.UserID, "POST", "/v1/cases", requestHash); err != nil {
 				return fmt.Errorf("case submission for deceased identity %s conflicts with idempotency record: %w",
-					input.Deceased.IDNumber, err)
+					input.Deceased.Fingerprint(), err)
 			}
 			existing, err := s.store.CaseByID(ctx, tx, record.ResourceID)
 			if err != nil {

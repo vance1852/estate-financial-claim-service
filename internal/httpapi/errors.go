@@ -3,7 +3,6 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 
 	"github.com/vance1852/estate-financial-claim-service/internal/audit"
@@ -37,7 +36,7 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status, code, message = http.StatusNotFound, "not_found", "The requested resource was not found."
 	case errors.Is(err, domain.ErrConflict), errors.Is(err, domain.ErrInvalidState):
 		status, code = http.StatusConflict, "conflict"
-		message = fmt.Sprintf("The request conflicts with current state: %v", err)
+		message = "The request conflicts with the current state of the resource."
 	case errors.Is(err, domain.ErrDependency):
 		status, code, message = http.StatusServiceUnavailable, "dependency_unavailable", "A required service is unavailable."
 	}
