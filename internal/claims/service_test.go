@@ -237,3 +237,46 @@ func TestConfirmedPayoutIsTerminalAndClosesClaimPayment(t *testing.T) {
 		t.Fatal("confirmed payout trigger allowed reopening")
 	}
 }
+
+func TestConfirmPayoutReplaysSameReferenceAndRejectsDifferentReference(t *testing.T) {
+	fixture := newClaimFixture(t)
+	claim, err := fixture.service.Create(context.Background(), fixture.claimant, fixture.caseID, fixture.accountIDs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payout, err := fixture.service.Approve(context.Background(), fixture.supervisor, claim.ID, "payout-key-replay", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.store.MarkPayoutSubmitted(context.Background(), payout.ID, fixture.clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	originalAt := fixture.clock.Now().Format(time.RFC3339Nano)
+	if err := fixture.store.ConfirmPayout(context.Background(), payout.ID, "provider-42", originalAt); err != nil {
+		t.Fatalf("first confirm: %v", err)
+	}
+	// A replay with the same provider reference must succeed even though the
+	// payout and claim are already completed (e.g. after a network timeout).
+	if err := fixture.store.ConfirmPayout(context.Background(), payout.ID, "provider-42", originalAt); err != nil {
+		t.Fatalf("same-reference replay: %v", err)
+	}
+	// A replay carrying a different provider reference must still be rejected so
+	// an unrelated confirmation is never attributed to this payout.
+	if err := fixture.store.ConfirmPayout(context.Background(), payout.ID, "provider-99", originalAt); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("different-reference replay error = %v", err)
+	}
+	loadedPayout, err := fixture.store.PayoutByClaim(context.Background(), claim.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loadedPayout.Status != domain.PayoutConfirmed || loadedPayout.ProviderRef != "provider-42" {
+		t.Fatalf("confirmed payout = %#v", loadedPayout)
+	}
+	loadedClaim, err := fixture.store.ClaimByID(context.Background(), fixture.store, claim.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loadedClaim.Status != domain.ClaimPaid {
+		t.Fatalf("claim status = %s", loadedClaim.Status)
+	}
+}

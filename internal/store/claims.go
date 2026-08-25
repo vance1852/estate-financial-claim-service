@@ -142,24 +142,25 @@ func (s *Store) MarkPayoutSubmitted(ctx context.Context, id string, at time.Time
 
 func (s *Store) ConfirmPayout(ctx context.Context, id, providerRef string, at string) error {
 	return s.WithTx(ctx, func(tx *sql.Tx) error {
-		var claimID string
 		result, err := tx.ExecContext(ctx, `UPDATE payouts SET status='confirmed',provider_ref=?,
 			attempts=attempts+1,updated_at=? WHERE id=? AND status IN ('pending','submitted')`, providerRef, at, id)
 		if err != nil {
 			return fmt.Errorf("confirm payout: %w", err)
 		}
-		count, _ := result.RowsAffected()
-		if count != 1 {
+		if count, _ := result.RowsAffected(); count != 1 {
 			var status, existingRef string
 			if err := tx.QueryRowContext(ctx, `SELECT status,provider_ref FROM payouts WHERE id=?`, id).
 				Scan(&status, &existingRef); err != nil {
 				return mapNotFound("payout", err)
 			}
-			if status == string(domain.PayoutConfirmed) && existingRef == providerRef {
+			// A replayed confirmation is only valid when the provider reference
+			// matches the one already recorded; a different reference must still be
+			// rejected so an unrelated confirmation is not attributed to this payout.
+			if status != string(domain.PayoutConfirmed) || existingRef != providerRef {
 				return domain.ErrConflict
 			}
-			return domain.ErrConflict
 		}
+		var claimID string
 		if err := tx.QueryRowContext(ctx, `SELECT claim_id FROM payouts WHERE id=?`, id).Scan(&claimID); err != nil {
 			return err
 		}
