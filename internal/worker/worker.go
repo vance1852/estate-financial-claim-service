@@ -88,16 +88,29 @@ func (w *Worker) processOne(ctx context.Context) error {
 	attemptCtx, cancel := context.WithTimeout(ctx, w.attemptLimit)
 	err = handler(attemptCtx, job)
 	cancel()
-	now := w.clock.Now()
-	if err == nil {
-		completionCtx := ctx
-		if job.Attempts > 1 {
-			completionCtx = attemptCtx
-		}
-		return w.store.CompleteJob(completionCtx, job.ID, w.owner, now)
+	if err != nil {
+		// The attempt failed. Demote the job back to pending with a backoff so
+		// it can be leased out and retried; FailJob also clears the lease.
+		return w.failWithBackoff(ctx, job, err)
 	}
+	// Completion must run against the worker's long-lived context, never the
+	// per-attempt deadline. On a successful retry the attempt context has
+	// already expired; completing under it would leave the job running with a
+	// stale lease, blocking reclaim/confirmation until the process restarts.
+	if err := w.store.CompleteJob(ctx, job.ID, w.owner, w.clock.Now()); err != nil {
+		// If the completion write fails, demote the job so the lease is released
+		// and the work can be retried rather than stranding it as running.
+		_ = w.failWithBackoff(ctx, job, err)
+		return err
+	}
+	return nil
+}
+
+// failWithBackoff records a retryable or terminal failure and releases the lease.
+func (w *Worker) failWithBackoff(ctx context.Context, job store.Job, cause error) error {
+	now := w.clock.Now()
 	backoff := time.Duration(math.Pow(2, float64(min(job.Attempts, 6)))) * time.Second
-	return w.store.FailJob(ctx, job, w.owner, now, now.Add(backoff), err)
+	return w.store.FailJob(ctx, job, w.owner, now, now.Add(backoff), cause)
 }
 
 func min(a, b int) int {

@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"time"
 
@@ -111,9 +110,6 @@ func (s *Store) CompleteJob(ctx context.Context, id, owner string, now time.Time
 		lease_until=NULL,last_error='',updated_at=? WHERE id=? AND status='running' AND lease_owner=?`,
 		formatTime(now), id, owner)
 	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil
-		}
 		return fmt.Errorf("complete job: %w", err)
 	}
 	count, _ := result.RowsAffected()

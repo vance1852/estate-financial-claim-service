@@ -82,6 +82,48 @@ func TestProcessOneCompletesSuccessfulJob(t *testing.T) {
 	}
 }
 
+func TestProcessOneCompletesSuccessfulRetryAndReleasesLease(t *testing.T) {
+	worker, database, manual := workerFixture(t)
+	insertTestJob(t, database, manual.Now(), "job_retry_success", "retry_success", 3)
+	// Force the attempt deadline to elapse before completion so that the
+	// per-attempt context is already cancelled when the job succeeds on retry.
+	worker.attemptLimit = time.Millisecond
+	var calls atomic.Int32
+	if err := worker.Register("retry_success", func(ctx context.Context, job store.Job) error {
+		calls.Add(1)
+		if calls.Load() == 1 {
+			return errors.New("provider unavailable")
+		}
+		// Second attempt: let the attempt context expire, then succeed.
+		<-ctx.Done()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// First attempt fails and is scheduled for retry.
+	if err := worker.processOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	manual.Advance(2 * time.Second)
+	// Second attempt succeeds despite the attempt context being cancelled.
+	if err := worker.processOne(context.Background()); err != nil {
+		t.Fatalf("successful retry completion: %v", err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("handler calls = %d, want 2", calls.Load())
+	}
+	var status, owner, lastError string
+	var lease any
+	if err := database.QueryRowContext(context.Background(),
+		"SELECT status,lease_owner,lease_until,last_error FROM worker_jobs WHERE id='job_retry_success'").
+		Scan(&status, &owner, &lease, &lastError); err != nil {
+		t.Fatal(err)
+	}
+	if status != "completed" || owner != "" || lease != nil || lastError != "" {
+		t.Fatalf("retry-completed job status=%s owner=%s lease=%v lastError=%s", status, owner, lease, lastError)
+	}
+}
+
 func TestProcessOneRetriesThenMarksPermanentFailure(t *testing.T) {
 	worker, database, manual := workerFixture(t)
 	insertTestJob(t, database, manual.Now(), "job_retry", "retry", 2)
