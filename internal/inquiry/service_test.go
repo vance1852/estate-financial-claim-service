@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -201,6 +202,57 @@ func TestRecordResultValidatesInputAndState(t *testing.T) {
 	valid := ResultInput{PartKey: "part", Accounts: []AccountResult{{ExternalReference: "a", Kind: domain.AccountDeposit, Currency: "CNY", BalanceMinor: 1}}}
 	if _, err := fixture.service.RecordResult(context.Background(), items[0].ID, valid); !errors.Is(err, domain.ErrInvalidState) {
 		t.Fatalf("pending inquiry result error = %v", err)
+	}
+}
+
+func TestDispatchRollsBackInquiriesAndJobsWhenAuditWriteFails(t *testing.T) {
+	fixture := newInquiryFixture(t)
+	ctx := context.Background()
+	restore := fixture.store.InjectFailure("audit", errors.New("audit storage unavailable"))
+	_, err := fixture.service.Dispatch(ctx, fixture.officer, fixture.caseID, "request-key-rollback", 2)
+	restore()
+	if err == nil || !strings.Contains(err.Error(), "audit storage unavailable") {
+		t.Fatalf("dispatch error = %v", err)
+	}
+	var inquiries, jobs int
+	if err := fixture.store.QueryRowContext(ctx, "SELECT COUNT(*) FROM inquiries WHERE case_id=?", fixture.caseID).Scan(&inquiries); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.store.QueryRowContext(ctx, "SELECT COUNT(*) FROM worker_jobs WHERE kind='dispatch_inquiry' AND resource_id IN (SELECT id FROM inquiries WHERE case_id=?)", fixture.caseID).Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+	if inquiries != 0 || jobs != 0 {
+		t.Fatalf("left inquiries=%d jobs=%d after failed dispatch", inquiries, jobs)
+	}
+	caseItem, err := fixture.store.CaseByID(ctx, fixture.store, fixture.caseID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if caseItem.Status != domain.CaseReviewing || caseItem.Version != 2 {
+		t.Fatalf("case not preserved in reviewing: %#v", caseItem)
+	}
+	items, err := fixture.service.Dispatch(ctx, fixture.officer, fixture.caseID, "request-key-retry", 2)
+	if err != nil {
+		t.Fatalf("retry dispatch error = %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("retry inquiries = %d, want one per institution", len(items))
+	}
+	if err := fixture.store.QueryRowContext(ctx, "SELECT COUNT(*) FROM inquiries WHERE case_id=?", fixture.caseID).Scan(&inquiries); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.store.QueryRowContext(ctx, "SELECT COUNT(*) FROM worker_jobs WHERE kind='dispatch_inquiry' AND resource_id IN (SELECT id FROM inquiries WHERE case_id=?)", fixture.caseID).Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+	if inquiries != 2 || jobs != 2 {
+		t.Fatalf("after retry inquiries=%d jobs=%d, want one per institution", inquiries, jobs)
+	}
+	retried, err := fixture.store.CaseByID(ctx, fixture.store, fixture.caseID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.Status != domain.CaseInquiring || retried.Version != 3 {
+		t.Fatalf("retried case = %#v", retried)
 	}
 }
 

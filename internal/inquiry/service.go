@@ -62,9 +62,6 @@ func (s *Service) Dispatch(ctx context.Context, principal domain.Principal, case
 			Payload: payload, Status: "pending", MaxAttempts: s.maxAttempts,
 			AvailableAt: now, CreatedAt: now, UpdatedAt: now})
 	}
-	if err := s.store.PrepareInquiryDispatch(ctx, created, jobs); err != nil {
-		return nil, err
-	}
 	err = s.store.WithTx(ctx, func(tx *sql.Tx) error {
 		item, err := s.store.CaseByID(ctx, tx, caseID)
 		if err != nil {
@@ -81,6 +78,9 @@ func (s *Service) Dispatch(ctx context.Context, principal domain.Principal, case
 			return err
 		}
 		if err := s.store.UpdateCase(ctx, tx, item, previous); err != nil {
+			return err
+		}
+		if err := s.store.PrepareInquiryDispatch(ctx, tx, created, jobs); err != nil {
 			return err
 		}
 		return s.store.InsertAudit(ctx, tx, audit.Event{ActorID: principal.UserID,

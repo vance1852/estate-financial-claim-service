@@ -50,21 +50,22 @@ func (s *Store) InsertInquiry(ctx context.Context, q DBTX, inquiry domain.Inquir
 	return nil
 }
 
-func (s *Store) PrepareInquiryDispatch(ctx context.Context, inquiries []domain.Inquiry, jobs []Job) error {
+// PrepareInquiryDispatch inserts the inquiry and dispatch job pairs within the
+// caller's transaction so a later failure (for example the dispatch audit write)
+// rolls every queued inquiry and task back together with the case transition.
+func (s *Store) PrepareInquiryDispatch(ctx context.Context, q DBTX, inquiries []domain.Inquiry, jobs []Job) error {
 	if len(inquiries) != len(jobs) {
 		return fmt.Errorf("inquiry and dispatch job counts differ: %w", domain.ErrValidation)
 	}
-	return s.WithTx(ctx, func(tx *sql.Tx) error {
-		for index := range inquiries {
-			if err := s.InsertInquiry(ctx, tx, inquiries[index]); err != nil {
-				return err
-			}
-			if err := s.InsertJob(ctx, tx, jobs[index]); err != nil {
-				return err
-			}
+	for index := range inquiries {
+		if err := s.InsertInquiry(ctx, q, inquiries[index]); err != nil {
+			return err
 		}
-		return nil
-	})
+		if err := s.InsertJob(ctx, q, jobs[index]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) InquiryByID(ctx context.Context, q DBTX, id string) (domain.Inquiry, error) {
