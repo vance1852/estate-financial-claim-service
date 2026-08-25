@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -25,14 +24,6 @@ type Service struct {
 	clock clock.Clock
 	ids   ids.Generator
 	ttl   time.Duration
-
-	cacheMu sync.RWMutex
-	cache   map[string]cachedPrincipal
-}
-
-type cachedPrincipal struct {
-	principal domain.Principal
-	expiresAt time.Time
 }
 
 type LoginResult struct {
@@ -47,7 +38,6 @@ func New(database *store.Store, c clock.Clock, generator ids.Generator, ttl time
 		clock: c,
 		ids:   generator,
 		ttl:   ttl,
-		cache: make(map[string]cachedPrincipal),
 	}
 }
 
@@ -102,19 +92,11 @@ func (s *Service) Authenticate(ctx context.Context, token string) (domain.Princi
 	}
 	hash := tokenHash(token)
 	now := s.clock.Now()
-	s.cacheMu.RLock()
-	cached, ok := s.cache[hash]
-	s.cacheMu.RUnlock()
-	if ok {
-		if now.Before(cached.expiresAt) {
-			return cached.principal, nil
-		}
-		s.cacheMu.Lock()
-		delete(s.cache, hash)
-		s.cacheMu.Unlock()
-		return domain.Principal{}, domain.ErrExpired
-	}
-
+	// Always consult the shared store. The store is the only source of truth
+	// for revocation: a logout handled by a peer instance writes revoked_at
+	// there, and re-reading it on every request guarantees the next request
+	// on any instance fails. A positive in-memory result would survive that
+	// revocation until it aged out, so none is retained.
 	session, principal, err := s.store.SessionPrincipal(ctx, hash, now)
 	if err != nil {
 		if errors.Is(err, domain.ErrExpired) {
@@ -125,9 +107,6 @@ func (s *Service) Authenticate(ctx context.Context, token string) (domain.Princi
 	if err := s.store.TouchSession(ctx, session.ID, now); err != nil {
 		return domain.Principal{}, domain.ErrUnauthorized
 	}
-	s.cacheMu.Lock()
-	s.cache[hash] = cachedPrincipal{principal: principal, expiresAt: session.ExpiresAt}
-	s.cacheMu.Unlock()
 	return principal, nil
 }
 
@@ -139,11 +118,6 @@ func (s *Service) Logout(ctx context.Context, token string) error {
 	err := s.store.RevokeSession(ctx, hash, s.clock.Now())
 	if errors.Is(err, domain.ErrNotFound) {
 		return domain.ErrUnauthorized
-	}
-	if err == nil {
-		s.cacheMu.Lock()
-		delete(s.cache, hash)
-		s.cacheMu.Unlock()
 	}
 	return err
 }
