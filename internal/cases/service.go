@@ -65,15 +65,14 @@ func (s *Service) Submit(ctx context.Context, principal domain.Principal, input 
 		return SubmitResult{}, err
 	}
 	now := s.clock.Now()
-	writeCtx := store.DurableWriteContext(ctx)
 	var result SubmitResult
-	err = s.store.WithTx(writeCtx, func(tx *sql.Tx) error {
-		record, replayErr := s.store.GetIdempotency(writeCtx, tx, "case_submit", input.IdempotencyKey, now)
+	err = s.store.WithTx(ctx, func(tx *sql.Tx) error {
+		record, replayErr := s.store.GetIdempotency(ctx, tx, "case_submit", input.IdempotencyKey, now)
 		if replayErr == nil {
 			if err := store.ValidateReplay(record, principal.UserID, "POST", "/v1/cases", requestHash); err != nil {
 				return err
 			}
-			existing, err := s.store.CaseByID(writeCtx, tx, record.ResourceID)
+			existing, err := s.store.CaseByID(ctx, tx, record.ResourceID)
 			if err != nil {
 				return err
 			}
@@ -102,27 +101,27 @@ func (s *Service) Submit(ctx context.Context, principal domain.Principal, input 
 			Jurisdiction: strings.TrimSpace(input.Jurisdiction), ClaimantUserID: principal.UserID,
 			Status: domain.CaseSubmitted, Version: 1, SubmittedAt: pointerTime(now), CreatedAt: now, UpdatedAt: now,
 		}
-		if err := s.store.InsertCase(writeCtx, tx, item); err != nil {
+		if err := s.store.InsertCase(ctx, tx, item); err != nil {
 			return err
 		}
-		actualPartyID, err := s.store.UpsertParty(writeCtx, tx, partyID, input.Claimant.Name, input.Claimant.Fingerprint(),
+		actualPartyID, err := s.store.UpsertParty(ctx, tx, partyID, input.Claimant.Name, input.Claimant.Fingerprint(),
 			domain.MaskIDNumber(input.Claimant.IDNumber), now.Format(time.RFC3339Nano))
 		if err != nil {
 			return err
 		}
-		if err := s.store.LinkParty(writeCtx, tx, caseID, actualPartyID, input.Relation); err != nil {
+		if err := s.store.LinkParty(ctx, tx, caseID, actualPartyID, input.Relation); err != nil {
 			return err
 		}
-		if err := s.store.InsertRequiredDocument(writeCtx, tx, documentID, caseID, "relationship_proof", now.Format(time.RFC3339Nano)); err != nil {
+		if err := s.store.InsertRequiredDocument(ctx, tx, documentID, caseID, "relationship_proof", now.Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
-		if err := s.store.InsertAudit(writeCtx, tx, audit.Event{ActorID: principal.UserID, Action: "case.submitted",
-			ObjectType: "estate_case", ObjectID: caseID, Result: "success", RequestID: audit.CorrelationID(writeCtx),
+		if err := s.store.InsertAudit(ctx, tx, audit.Event{ActorID: principal.UserID, Action: "case.submitted",
+			ObjectType: "estate_case", ObjectID: caseID, Result: "success", RequestID: audit.CorrelationID(ctx),
 			Details: map[string]any{"relation": input.Relation, "deceased_identity": input.Deceased.IDNumber}, CreatedAt: now}); err != nil {
 			return err
 		}
 		response, _ := json.Marshal(map[string]string{"case_id": caseID})
-		if err := s.store.PutIdempotency(writeCtx, tx, store.IdempotencyRecord{Scope: "case_submit", Key: input.IdempotencyKey,
+		if err := s.store.PutIdempotency(ctx, tx, store.IdempotencyRecord{Scope: "case_submit", Key: input.IdempotencyKey,
 			ActorID: principal.UserID, Method: "POST", Route: "/v1/cases", RequestHash: requestHash,
 			StatusCode: 201, ResponseBody: response, ResourceID: caseID, ExpiresAt: now.Add(24 * time.Hour), CreatedAt: now}); err != nil {
 			return err

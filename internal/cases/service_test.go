@@ -115,6 +115,28 @@ func TestSubmitRollsBackWhenAuditWriteFails(t *testing.T) {
 	}
 }
 
+func TestSubmitAbortsWhenRequestContextIsCanceled(t *testing.T) {
+	fixture := newCaseFixture(t)
+	ctx, cancel := context.WithCancel(audit.WithRequestID(context.Background(), "req_cancel"))
+	cancel()
+	_, err := fixture.service.Submit(ctx, fixture.claimant, validSubmit("submit-key-cancel"))
+	if err == nil {
+		t.Fatal("submit with canceled context unexpectedly succeeded")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("submit error = %v, want context.Canceled", err)
+	}
+	for _, table := range []string{"estate_cases", "parties", "case_parties", "documents", "idempotency_keys", "audit_events"} {
+		var count int
+		if err := fixture.store.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM "+table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Errorf("%s retained %d rows after canceled submit", table, count)
+		}
+	}
+}
+
 func TestSubmitReplaysPersistedResultAndRejectsChangedPayload(t *testing.T) {
 	fixture := newCaseFixture(t)
 	input := validSubmit("submit-key-replay")

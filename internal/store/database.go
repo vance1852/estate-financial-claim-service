@@ -29,10 +29,6 @@ type Store struct {
 	failpoints map[string]error
 }
 
-func DurableWriteContext(ctx context.Context) context.Context {
-	return context.WithoutCancel(ctx)
-}
-
 func Open(ctx context.Context, path string) (*Store, error) {
 	if path == "" {
 		return nil, errors.New("database path is required")
